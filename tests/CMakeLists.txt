@@ -1,0 +1,6 @@
+add_executable(genicam-integration integration.c)
+target_include_directories(genicam-integration PRIVATE ../src)
+target_link_libraries(genicam-integration PRIVATE genicam ZLIB::ZLIB)
+gc_warnings(genicam-integration)
+add_test(NAME genicam-integration COMMAND genicam-integration)
+set_tests_properties(genicam-integration PROPERTIES TIMEOUT 15)

@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(EXPAT)
+find_dependency(ZLIB)
+if(@GC_FIND_THREADS@)
+	find_dependency(Threads)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/genicam-targets.cmake")
