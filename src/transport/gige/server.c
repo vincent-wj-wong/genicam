@@ -18,6 +18,7 @@ struct gc_gige_server {
 	void *context;
 	int (*read)(void *context, uint64_t address, void *data, size_t size);
 	int (*write)(void *context, uint64_t address, const void *data, size_t size);
+	int broadcast_discovery;
 	uint8_t registers[SERVER_BOOTSTRAP];
 	uint8_t packet[GEV_MAX_PACKET];
 	struct gc_frame last_frame;
@@ -276,6 +277,11 @@ int gc_gige_server_poll(struct gc_gige_server *server, unsigned int timeout_ms)
 		return GC_OK;
 
 	command = gc_be16(request + 2);
+	if (server->broadcast_discovery &&
+	    (command == GVCP_DISCOVERY || get_reg(server, GEV_IP) >> 24 == 127) &&
+	    ((peer.address ^ get_reg(server, GEV_IP)) & get_reg(server, GEV_NETMASK)))
+		return GC_OK;
+
 	rc = process_request(server, peer, command, request + GVCP_HEADER,
 			     size - GVCP_HEADER, response + GVCP_HEADER, &length);
 	if (!(request[1] & GVCP_ACK_REQUIRED) && command != GVCP_DISCOVERY)
@@ -441,6 +447,7 @@ int gc_gige_server_open(const struct gc_gige_server_config *config,
 	server->read = config->read;
 	server->write = config->write;
 	server->context = config->context;
+	server->broadcast_discovery = config->broadcast_discovery;
 	server->last_frame.data = config->resend_buffer;
 	server->last_frame.capacity = config->resend_capacity;
 

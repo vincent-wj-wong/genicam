@@ -60,7 +60,13 @@ endfunction()
 gc_warnings(genicam)
 
 if(GC_BUILD_DEMOS)
+	set(gc_demo_xml "${CMAKE_CURRENT_SOURCE_DIR}/demo/camera.xml")
 	add_executable(genicam-server demo/server.c)
+	target_compile_definitions(genicam-server PRIVATE
+		GC_DEMO_XML_FILE="${gc_demo_xml}")
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${gc_demo_xml}")
+	file(GENERATE OUTPUT "$<TARGET_FILE_DIR:genicam-server>/camera.xml"
+		INPUT "${gc_demo_xml}")
 	target_include_directories(genicam-server PRIVATE src)
 	target_link_libraries(genicam-server PRIVATE genicam)
 	gc_warnings(genicam-server)

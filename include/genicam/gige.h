@@ -42,7 +42,7 @@ struct gc_gige_server;
 struct gc_gige_server_config {
 	const char *address;
 	const char *netmask;
-	int broadcast_discovery;	/* Listen on all IPv4 interfaces. */
+	int broadcast_discovery;	/* Answer discovery broadcasts on this subnet. */
 	uint16_t port;
 	const char *manufacturer;
 	const char *model;

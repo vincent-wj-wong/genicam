@@ -169,13 +169,94 @@ static unsigned long parse_number(const char *arg, unsigned long max)
 	return errno || end == arg || *end || value > max ? 0 : value;
 }
 
+static int print_feature(struct gc_nodemap *map, const char *name)
+{
+	enum gc_feature_type type;
+	char text[4097];
+	int64_t integer;
+	double decimal;
+	int rc;
+
+	rc = gc_feature_get_type(map, name, &type);
+	if (rc)
+		return rc;
+	switch (type) {
+	case GC_FEATURE_INTEGER:
+		rc = gc_feature_get_integer(map, name, &integer);
+		if (!rc)
+			printf("%s = %" PRId64 "\n", name, integer);
+		return rc;
+	case GC_FEATURE_BOOLEAN:
+		rc = gc_feature_get_integer(map, name, &integer);
+		if (!rc)
+			printf("%s = %s\n", name, integer ? "true" : "false");
+		return rc;
+	case GC_FEATURE_FLOAT:
+		rc = gc_feature_get_float(map, name, &decimal);
+		if (!rc)
+			printf("%s = %.17g\n", name, decimal);
+		return rc;
+	case GC_FEATURE_ENUMERATION:
+	case GC_FEATURE_STRING:
+		rc = gc_feature_get_string(map, name, text, sizeof(text));
+		if (!rc)
+			printf("%s = %s\n", name, text);
+		return rc;
+	default:
+		return GC_UNSUPPORTED;
+	}
+}
+
+static void list_features(struct gc_nodemap *map)
+{
+	static const char *const types[] = {
+		[GC_FEATURE_INTEGER] = "integer",
+		[GC_FEATURE_FLOAT] = "float",
+		[GC_FEATURE_BOOLEAN] = "boolean",
+		[GC_FEATURE_ENUMERATION] = "enumeration",
+		[GC_FEATURE_STRING] = "string",
+		[GC_FEATURE_COMMAND] = "command",
+	};
+	enum gc_feature_type type;
+	const char *name;
+	size_t i;
+
+	for (i = 0; i < gc_nodemap_count(map); i++) {
+		name = gc_nodemap_name(map, i);
+		if (gc_feature_get_type(map, name, &type) == GC_OK)
+			printf("%-26s %s\n", name, types[type]);
+	}
+}
+
+static int inspect(const struct gc_gige_options *options, const char *name)
+{
+	struct gc_device *device = NULL;
+	struct gc_nodemap *map = NULL;
+	int rc;
+
+	rc = gc_gige_open(options, &device);
+	if (!rc)
+		rc = gc_nodemap_open(device, &map);
+	if (!rc) {
+		if (name)
+			rc = print_feature(map, name);
+		else
+			list_features(map);
+	}
+	gc_nodemap_close(map);
+	gc_device_close(device);
+	return rc;
+}
+
 int main(int argc, char **argv)
 {
 	struct gc_gige_device_info devices[MAX_DEVICES];
 	struct gc_gige_options options = { 0 };
 	unsigned long frames = 5;
 	unsigned long port;
+	const char *feature;
 	size_t count;
+	int required;
 	int rc;
 
 	if (argc > 1 && !strcmp(argv[1], "--discover")) {
@@ -184,6 +265,21 @@ int main(int argc, char **argv)
 		if (argc == 3)
 			options.interface = argv[2];
 		rc = discover(&options, devices, MAX_DEVICES, &count);
+	} else if (argc > 1 && (!strcmp(argv[1], "--get") ||
+			       !strcmp(argv[1], "--list"))) {
+		required = !strcmp(argv[1], "--get") ? 4 : 3;
+		if (argc < required || argc > required + 1)
+			goto usage;
+		options.address = argv[2];
+		options.monitor = 1;
+		feature = required == 4 ? argv[3] : NULL;
+		if (argc > required) {
+			port = parse_number(argv[required], UINT16_MAX);
+			if (!port)
+				goto usage;
+			options.port = (uint16_t)port;
+		}
+		rc = inspect(&options, feature);
 	} else {
 		if (argc > 5)
 			goto usage;
@@ -209,5 +305,7 @@ usage:
 	fprintf(stderr, "Usage: %s [address [port [frame-count [image.pgm]]]]\n",
 		argv[0]);
 	fprintf(stderr, "       %s --discover [interface]\n", argv[0]);
+	fprintf(stderr, "       %s --list address [port]\n", argv[0]);
+	fprintf(stderr, "       %s --get address feature [port]\n", argv[0]);
 	return EXIT_FAILURE;
 }

@@ -349,6 +349,47 @@ struct node *gc_node_find(struct gc_nodemap *map, const char *name)
 	return NULL;
 }
 
+int gc_feature_get_type(struct gc_nodemap *map, const char *name,
+			enum gc_feature_type *type)
+{
+	const struct node *node;
+
+	if (!map || !name || !type)
+		return GC_INVALID;
+	node = gc_node_find(map, name);
+	if (!node)
+		return GC_NOT_FOUND;
+	switch (node->type) {
+	case NODE_INTEGER:
+	case NODE_INT_REG:
+	case NODE_MASKED_REG:
+	case NODE_INT_CONVERTER:
+	case NODE_INT_SWISS_KNIFE:
+		*type = GC_FEATURE_INTEGER;
+		return GC_OK;
+	case NODE_FLOAT:
+	case NODE_FLOAT_REG:
+	case NODE_CONVERTER:
+	case NODE_SWISS_KNIFE:
+		*type = GC_FEATURE_FLOAT;
+		return GC_OK;
+	case NODE_BOOLEAN:
+		*type = GC_FEATURE_BOOLEAN;
+		return GC_OK;
+	case NODE_ENUM:
+		*type = GC_FEATURE_ENUMERATION;
+		return GC_OK;
+	case NODE_STRING_REG:
+		*type = GC_FEATURE_STRING;
+		return GC_OK;
+	case NODE_COMMAND:
+		*type = GC_FEATURE_COMMAND;
+		return GC_OK;
+	default:
+		return GC_UNSUPPORTED;
+	}
+}
+
 size_t gc_nodemap_count(const struct gc_nodemap *map)
 {
 	return map ? map->count : 0;

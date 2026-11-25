@@ -332,6 +332,7 @@ int main(void)
 	struct gc_device *monitor;
 	struct gc_device *contender;
 	struct gc_nodemap *map;
+	enum gc_feature_type feature_type;
 	struct osal_thread *thread;
 	uint8_t zip[XML_ZIP_SIZE] = { 0 };
 	char text[32];
@@ -351,6 +352,8 @@ int main(void)
 
 	config.port = temporary_port();
 	config.address = options.address;
+	config.netmask = "255.0.0.0";
+	config.broadcast_discovery = 1;
 	config.manufacturer = "Test Labs";
 	config.serial = "TEST-001";
 	config.xml = zip;
@@ -366,6 +369,14 @@ int main(void)
 	CHECK(thread);
 
 	options.port = config.port;
+#ifdef __linux__
+	options.interface = config.address;
+	options.address = NULL;
+	CHECK(gc_gige_discover(&options, &info, 1, &count) == GC_OK);
+	CHECK(count == 1 && !strcmp(info.address, config.address));
+	options.address = config.address;
+	options.interface = NULL;
+#endif
 	CHECK(gc_gige_discover(&options, &info, 1, &count) == GC_OK);
 	CHECK(count == 1 && !strcmp(info.serial, config.serial));
 	CHECK(!strcmp(info.address, options.address));
@@ -379,6 +390,17 @@ int main(void)
 	options.monitor = 0;
 
 	CHECK(gc_nodemap_open(device, &map) == GC_OK);
+	CHECK(gc_feature_get_type(map, "Width", &feature_type) == GC_OK &&
+	      feature_type == GC_FEATURE_INTEGER);
+	CHECK(gc_feature_get_type(map, "ExposureTime", &feature_type) == GC_OK &&
+	      feature_type == GC_FEATURE_FLOAT);
+	CHECK(gc_feature_get_type(map, "PixelFormat", &feature_type) == GC_OK &&
+	      feature_type == GC_FEATURE_ENUMERATION);
+	CHECK(gc_feature_get_type(map, "Label", &feature_type) == GC_OK &&
+	      feature_type == GC_FEATURE_STRING);
+	CHECK(gc_feature_get_type(map, "Acquire", &feature_type) == GC_OK &&
+	      feature_type == GC_FEATURE_COMMAND);
+	CHECK(gc_feature_get_type(map, "Missing", &feature_type) == GC_NOT_FOUND);
 	CHECK(gc_feature_get_integer(map, "Width", &value) == GC_OK && value == 64);
 	CHECK(gc_feature_set_integer(map, "Width", 65) == GC_INVALID);
 	CHECK(gc_feature_set_integer(map, "Width", 72) == GC_OK);

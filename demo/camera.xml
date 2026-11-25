@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RegisterDescription xmlns="http://www.genicam.org/GenApi/Version_1_1"
+    ModelName="VirtualGigECamera" VendorName="GenICamDemo"
+    StandardNameSpace="None" SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0"
+    MajorVersion="1" MinorVersion="0" SubMinorVersion="0"
+    ProductGuid="36D356C9-3ADE-4D09-A4F4-C5E171387F70"
+    VersionGuid="59D8CD5E-4E40-49D7-8E2D-EEC932787342">
+  <Category Name="Root">
+    <pFeature>Width</pFeature>
+    <pFeature>Height</pFeature>
+    <pFeature>OffsetX</pFeature>
+    <pFeature>OffsetY</pFeature>
+    <pFeature>PixelFormat</pFeature>
+    <pFeature>ExposureTime</pFeature>
+    <pFeature>Gain</pFeature>
+    <pFeature>PayloadSize</pFeature>
+    <pFeature>AcquisitionMode</pFeature>
+    <pFeature>AcquisitionStart</pFeature>
+    <pFeature>AcquisitionStop</pFeature>
+    <pFeature>DeviceUserID</pFeature>
+  </Category>
+  <Integer Name="Width">
+    <pValue>WidthReg</pValue>
+    <Min>16</Min>
+    <Max>640</Max>
+  </Integer>
+  <Integer Name="Height">
+    <pValue>HeightReg</pValue>
+    <Min>16</Min>
+    <Max>480</Max>
+  </Integer>
+  <Integer Name="OffsetX">
+    <pValue>OffsetXReg</pValue>
+    <Min>0</Min>
+    <Max>0</Max>
+    <Inc>1</Inc>
+  </Integer>
+  <Integer Name="OffsetY">
+    <pValue>OffsetYReg</pValue>
+    <Min>0</Min>
+    <Max>0</Max>
+    <Inc>1</Inc>
+  </Integer>
+  <Float Name="ExposureTime">
+    <pValue>ExposureReg</pValue>
+    <Min>100</Min>
+    <Max>30000</Max>
+  </Float>
+  <Float Name="Gain">
+    <pValue>GainReg</pValue>
+    <Min>0</Min>
+    <Max>24</Max>
+  </Float>
+  <Enumeration Name="PixelFormat">
+    <EnumEntry Name="Mono8">
+      <Value>0x01080001</Value>
+    </EnumEntry>
+    <pValue>PixelReg</pValue>
+  </Enumeration>
+  <Enumeration Name="AcquisitionMode">
+    <EnumEntry Name="Continuous">
+      <Value>0</Value>
+    </EnumEntry>
+    <pValue>AcquisitionModeReg</pValue>
+  </Enumeration>
+  <Command Name="AcquisitionStart">
+    <pValue>AcquisitionReg</pValue>
+    <CommandValue>1</CommandValue>
+  </Command>
+  <Command Name="AcquisitionStop">
+    <pValue>AcquisitionReg</pValue>
+    <CommandValue>0</CommandValue>
+  </Command>
+  <Integer Name="PayloadSize">
+    <pValue>PayloadReg</pValue>
+  </Integer>
+  <StringReg Name="DeviceUserID">
+    <Address>0x1001c</Address>
+    <Length>32</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+  </StringReg>
+  <IntReg Name="WidthReg">
+    <Address>0x10000</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="HeightReg">
+    <Address>0x10004</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <FloatReg Name="ExposureReg">
+    <Address>0x10008</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </FloatReg>
+  <FloatReg Name="GainReg">
+    <Address>0x1000c</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </FloatReg>
+  <IntReg Name="PixelReg">
+    <Address>0x10010</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="AcquisitionReg">
+    <Address>0x10014</Address>
+    <Length>4</Length>
+    <AccessMode>WO</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="PayloadReg">
+    <Address>0x10018</Address>
+    <Length>4</Length>
+    <AccessMode>RO</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="OffsetXReg">
+    <Address>0x1003c</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="OffsetYReg">
+    <Address>0x10040</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <IntReg Name="AcquisitionModeReg">
+    <Address>0x10044</Address>
+    <Length>4</Length>
+    <AccessMode>RW</AccessMode>
+    <pPort>Device</pPort>
+    <Endianess>BigEndian</Endianess>
+  </IntReg>
+  <Port Name="Device"/>
+</RegisterDescription>

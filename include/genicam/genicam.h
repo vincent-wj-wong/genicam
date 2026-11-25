@@ -27,6 +27,15 @@ struct gc_device;
 struct gc_stream;
 struct gc_nodemap;
 
+enum gc_feature_type {
+	GC_FEATURE_INTEGER,
+	GC_FEATURE_FLOAT,
+	GC_FEATURE_BOOLEAN,
+	GC_FEATURE_ENUMERATION,
+	GC_FEATURE_STRING,
+	GC_FEATURE_COMMAND,
+};
+
 enum gc_payload_type {
 	GC_PAYLOAD_IMAGE = 1,
 };
@@ -83,6 +92,8 @@ void gc_stream_close(struct gc_stream *stream);
 
 int gc_nodemap_open(struct gc_device *device, struct gc_nodemap **map);
 void gc_nodemap_close(struct gc_nodemap *map);
+int gc_feature_get_type(struct gc_nodemap *map, const char *name,
+			enum gc_feature_type *type);
 int gc_feature_get_integer(struct gc_nodemap *map, const char *name,
 			   int64_t *value);
 int gc_feature_set_integer(struct gc_nodemap *map, const char *name,

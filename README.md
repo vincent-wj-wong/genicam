@@ -30,12 +30,43 @@ Start the camera and controller in two terminals.
 
 Single-configuration builds put the executables directly in `build`.
 Multi-configuration builds place them in the selected configuration directory,
-such as `build/Release`. Use `Ctrl+C` to stop the camera. A non-loopback IPv4
-argument advertises that address and enables broadcast discovery. The demo
-advertises a /24 mask for LAN addresses. For a different subnet, set the
-mask in the server configuration. A directed discovery uses the address in
-the command above. To list cameras on a selected LAN interface, use
-`genicam-control --discover <local-ip>`.
+such as `build/Release`. Use `Ctrl+C` to stop the camera.
+
+### Camera XML and parameter reads
+
+The server loads [demo/camera.xml](demo/camera.xml) at startup and serves it
+through GVCP. Edit the XML and restart the server to publish your changes.
+The register addresses and types must match the demo's register callbacks.
+Use `genicam-server --xml path/to/camera.xml` to load a different file.
+CMake also places a copy of `camera.xml` next to the executable for use
+when the source tree is unavailable.
+
+```sh
+./build/genicam-control --list 127.0.0.1
+./build/genicam-control --get 127.0.0.1 ExposureTime
+./build/genicam-control --get 127.0.0.1 PixelFormat
+```
+
+`--list` shows supported node names and types from the remote XML.
+`--get` reads the current value from the device in monitor mode.
+Both commands accept a custom UDP port as the final argument.
+
+### Discovery with Aravis
+
+For a viewer on the server host, start `genicam-server` and refresh the
+device list. The demo advertises `127.0.0.1` and answers discovery from
+the loopback subnet. For a viewer on another computer, start the server
+with the local IPv4 address on their shared subnet. The demo reads the
+subnet mask from that interface.
+
+```sh
+./build/genicam-server 192.168.1.10 3956
+```
+
+Replace the example address with your server's LAN address. Keep the default
+GVCP port `3956` for standard broadcast discovery. To check discovery with
+Aravis on the controller host, run `arv-tool-0.8` without a command.
+`genicam-control --discover <local-ip>` can also check a selected interface.
 
 Install the static library and public headers with
 `cmake --install build --prefix <prefix>`. An application using CMake can
@@ -46,7 +77,7 @@ Set `GC_BUILD_DEMOS=OFF` and `BUILD_TESTING=OFF` for a library-only build.
 
 | Header | Purpose |
 | --- | --- |
-| `genicam.h` | Device port, feature access, stream receive, frame metadata, and statistics |
+| `genicam.h` | Device port, feature type and value access, stream receive, frame metadata, and statistics |
 | `gige.h` | Camera discovery, controller configuration, and reusable camera server |
 | `sfnc.h` | Names for common standardized features |
 | `pfnc.h` | Lookup and row-size calculation for supported pixel formats |
