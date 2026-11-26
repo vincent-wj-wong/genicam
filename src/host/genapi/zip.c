@@ -1,4 +1,5 @@
-#include "core/internal.h"
+/* GenICam GenApi 2.1.1 compressed device descriptions. */
+#include "host/internal.h"
 
 #include <stdlib.h>
 #include <string.h>

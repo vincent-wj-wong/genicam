@@ -1,10 +1,8 @@
-#ifndef GC_GIGE_INTERNAL_H
-#define GC_GIGE_INTERNAL_H
+/* GigE Vision 1.2 bootstrap and GVCP. GVSP extended IDs are from 2.x. */
+#ifndef GC_GIGE_PROTOCOL_H
+#define GC_GIGE_PROTOCOL_H
 
-#include <genicam/gige.h>
-
-#include "core/internal.h"
-#include "osal/osal.h"
+#include "common/internal.h"
 
 #define GVCP_HEADER		8
 #define GVCP_MEMORY_MAX		512
@@ -64,25 +62,34 @@
 #define GVSP_LEADER		1
 #define GVSP_TRAILER		2
 #define GVSP_DATA		3
+#define GVSP_ALL_IN		4
 #define GVSP_EXTENDED		0x80
 
-struct gige_device {
-	struct gc_device device;
-	osal_socket control;
-	struct osal_endpoint local;
-	struct osal_endpoint peer;
-	struct osal_mutex *lock;
-	struct osal_thread *heartbeat_thread;
-	unsigned int timeout;
-	unsigned int heartbeat;
-	uint32_t capability;
-	uint64_t timestamp_hz;
-	uint16_t request;
-	uint16_t packet_size;
-	int monitor;
-	int stopping;
-	int stream_open;
+struct gvcp_packet {
+	const uint8_t *body;
+	size_t size;
+	uint16_t status;
+	uint16_t command;
+	uint16_t id;
 };
+
+struct gvsp_packet {
+	const uint8_t *body;
+	size_t size;
+	uint64_t block;
+	uint32_t id;
+	unsigned int kind;
+	int extended;
+};
+
+int gvcp_decode(const uint8_t *buffer, size_t size, struct gvcp_packet *packet);
+int gvsp_decode(const uint8_t *buffer, size_t size, struct gvsp_packet *packet);
+void gvsp_write_header(uint8_t *buffer, uint16_t status, uint16_t block,
+		       uint32_t id, unsigned int kind);
+int gvsp_read_image_leader(const struct gvsp_packet *packet, struct gc_frame *frame);
+void gvsp_write_image_leader(uint8_t *buffer, const struct gc_frame *frame);
+int gvsp_read_image_trailer(const uint8_t *data, size_t size, uint32_t height);
+void gvsp_write_image_trailer(uint8_t *buffer, uint32_t height);
 
 static inline void gvcp_header(uint8_t *buffer, uint16_t status,
 			       uint16_t command, uint16_t size, uint16_t id)
@@ -93,9 +100,4 @@ static inline void gvcp_header(uint8_t *buffer, uint16_t status,
 	gc_put_be16(buffer + 6, id);
 }
 
-int gige_stream_open(void *context, struct gc_stream **stream);
-int gige_image_layout(struct gc_frame *frame, size_t *size);
-int gige_request_resend(struct gige_device *dev, uint64_t block, int extended,
-			uint32_t first, uint32_t last);
-
-#endif /* GC_GIGE_INTERNAL_H */
+#endif /* GC_GIGE_PROTOCOL_H */

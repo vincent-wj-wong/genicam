@@ -1,0 +1,11 @@
+/* GigE Vision 1.2 and 2.x IPv4/UDP transport constants. */
+#ifndef GENICAM_GIGE_COMMON_H
+#define GENICAM_GIGE_COMMON_H
+
+#define GC_GIGE_CONTROL_PORT 3956
+#define GC_GIGE_IPV4_SIZE 16
+
+#define GC_GIGE_CAMERA_VERSION_MAJOR 1
+#define GC_GIGE_CAMERA_VERSION_MINOR 2
+
+#endif /* GENICAM_GIGE_COMMON_H */

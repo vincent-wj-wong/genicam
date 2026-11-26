@@ -1,7 +1,8 @@
 #ifndef GC_OSAL_H
 #define GC_OSAL_H
 
-#include <genicam/genicam.h>
+#include <genicam/frame.h>
+#include <genicam/status.h>
 
 #define OSAL_INVALID_SOCKET UINTPTR_MAX
 

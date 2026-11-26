@@ -1,3 +1,4 @@
+/* GenICam GenApi 2.1.1 feature access and register mapping subset. */
 #include "nodemap.h"
 
 #include <errno.h>
@@ -731,6 +732,27 @@ static int copy_string(char *out, size_t capacity, const char *data, size_t leng
 	return GC_OK;
 }
 
+static int string_target(struct gc_nodemap *map, const char *name, int write,
+			  struct node **target, unsigned int *depth)
+{
+	struct node *node;
+	int rc;
+
+	for (*depth = 0; ; (*depth)++) {
+		node = gc_node_find(map, name);
+		rc = check_access(map, node, *depth, write);
+		if (rc)
+			return rc;
+		if (node->type != NODE_STRING)
+			break;
+		name = gc_node_property(node, PROP_PVALUE);
+		if (!name)
+			break;
+	}
+	*target = node;
+	return GC_OK;
+}
+
 int gc_feature_get_string(struct gc_nodemap *map, const char *name, char *value,
 			  size_t capacity)
 {
@@ -740,24 +762,24 @@ int gc_feature_get_string(struct gc_nodemap *map, const char *name, char *value,
 	struct node *entry;
 	const char *end;
 	int64_t number;
+	unsigned int depth;
 	int rc;
 
 	if (!map || !name || !value || !capacity)
 		return GC_INVALID;
 	osal_mutex_lock(map->lock);
-	node = gc_node_find(map, name);
-	rc = check_access(map, node, 0, 0);
+	rc = string_target(map, name, 0, &node, &depth);
 	if (rc)
 		goto out;
 	if (node->type == NODE_ENUM) {
-		rc = read_int(map, node, 0, &number);
+		rc = read_int(map, node, depth, &number);
 		if (rc)
 			goto out;
-		entry = find_enum(map, node, NULL, number, 0);
+		entry = find_enum(map, node, NULL, number, depth);
 		rc = entry ? copy_string(value, capacity, entry->name,
 					 strlen(entry->name)) : GC_NOT_FOUND;
 	} else if (node->type == NODE_STRING_REG) {
-		rc = get_reg_info(map, node, 0, &info);
+		rc = get_reg_info(map, node, depth, &info);
 		if (!rc)
 			rc = gc_device_read(map->device, info.address, data, info.length);
 		if (rc)
@@ -765,6 +787,9 @@ int gc_feature_get_string(struct gc_nodemap *map, const char *name, char *value,
 		end = memchr(data, 0, info.length);
 		rc = copy_string(value, capacity, data,
 				 end ? (size_t)(end - data) : info.length);
+	} else if (node->type == NODE_STRING) {
+		end = gc_node_property(node, PROP_VALUE);
+		rc = end ? copy_string(value, capacity, end, strlen(end)) : GC_PROTOCOL;
 	} else {
 		rc = GC_UNSUPPORTED;
 	}
@@ -782,26 +807,26 @@ int gc_feature_set_string(struct gc_nodemap *map, const char *name,
 	struct node *entry;
 	int64_t number;
 	size_t length;
+	unsigned int depth;
 	int rc;
 
 	if (!map || !name || !value)
 		return GC_INVALID;
 	osal_mutex_lock(map->lock);
-	node = gc_node_find(map, name);
-	rc = check_access(map, node, 0, 1);
+	rc = string_target(map, name, 1, &node, &depth);
 	if (rc)
 		goto out;
 	if (node->type == NODE_ENUM) {
-		entry = find_enum(map, node, value, 0, 0);
+		entry = find_enum(map, node, value, 0, depth);
 		if (!entry) {
 			rc = GC_NOT_FOUND;
 			goto out;
 		}
-		rc = read_int(map, entry, 1, &number);
+		rc = read_int(map, entry, depth + 1, &number);
 		if (!rc)
-			rc = write_int(map, node, 0, number);
+			rc = write_int(map, node, depth, number);
 	} else if (node->type == NODE_STRING_REG) {
-		rc = get_reg_info(map, node, 0, &info);
+		rc = get_reg_info(map, node, depth, &info);
 		if (rc)
 			goto out;
 		length = strlen(value);
@@ -811,6 +836,8 @@ int gc_feature_set_string(struct gc_nodemap *map, const char *name,
 		}
 		memcpy(data, value, length);
 		rc = gc_device_write(map->device, info.address, data, info.length);
+	} else if (node->type == NODE_STRING) {
+		rc = GC_ACCESS;
 	} else {
 		rc = GC_UNSUPPORTED;
 	}

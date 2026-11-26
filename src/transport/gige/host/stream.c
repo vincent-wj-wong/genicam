@@ -1,12 +1,11 @@
+/* GigE Vision 1.2/2.x GVSP single-channel image reception. */
 #include "gige.h"
 
-#include <genicam/pfnc.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define IMAGE_LIMIT		(256U * 1024U * 1024U)
 #define DATA_LIMIT		(GEV_MIN_PACKET - GEV_UDP_OVERHEAD - GVSP_EXT_HEADER)
-#define PACKET_LIMIT		(IMAGE_LIMIT / DATA_LIMIT + 2)
+#define PACKET_LIMIT		(GC_IMAGE_LIMIT / DATA_LIMIT + 2)
 #define PACKET_BITMAP		((PACKET_LIMIT + 7) / 8)
 #define RESEND_INTERVAL_MS	10
 #define RESEND_ATTEMPTS		3
@@ -18,6 +17,7 @@ struct gige_stream {
 	osal_socket socket;
 	struct osal_endpoint local;
 	struct gc_stream_stats stats;
+	uint32_t packet_size;
 	uint8_t packet[GEV_MAX_PACKET];
 	uint8_t seen[PACKET_BITMAP];
 	int running;
@@ -39,56 +39,7 @@ struct assembly {
 	int active;
 };
 
-struct stream_packet {
-	const uint8_t *body;
-	size_t size;
-	uint64_t block;
-	uint32_t id;
-	unsigned int kind;
-	int extended;
-};
-
-int gige_image_layout(struct gc_frame *frame, size_t *size)
-{
-	size_t row;
-	int rc;
-
-	if (!frame->width || !frame->height)
-		return GC_PROTOCOL;
-	rc = gc_pfnc_row_size(frame->pixel_format, frame->width, &row);
-	if (rc)
-		return rc;
-	if (row > IMAGE_LIMIT || frame->x_padding > IMAGE_LIMIT - row)
-		return GC_PROTOCOL;
-	frame->stride = row + frame->x_padding;
-	if (frame->height > (IMAGE_LIMIT - frame->y_padding) / frame->stride)
-		return GC_PROTOCOL;
-	*size = frame->stride * frame->height + frame->y_padding;
-	return GC_OK;
-}
-
-static int parse_packet(const uint8_t *data, size_t size,
-			struct stream_packet *packet)
-{
-	size_t header;
-
-	if (size < GVSP_HEADER || (gc_be16(data) && gc_be16(data) != 0x0100))
-		return GC_PROTOCOL;
-	packet->extended = !!(data[4] & GVSP_EXTENDED);
-	header = packet->extended ? GVSP_EXT_HEADER : GVSP_HEADER;
-	if (size < header)
-		return GC_PROTOCOL;
-
-	packet->kind = data[4] & 0x7f;
-	packet->block = packet->extended ? gc_be64(data + 8) : gc_be16(data + 2);
-	packet->id = packet->extended ? gc_be32(data + 16) :
-					 (gc_be32(data + 4) & 0xffffff);
-	packet->size = size - header;
-	packet->body = data + header;
-	return GC_OK;
-}
-
-static int newer_block(uint64_t previous, const struct stream_packet *packet)
+static int newer_block(uint64_t previous, const struct gvsp_packet *packet)
 {
 	if (packet->extended)
 		return packet->block - previous < (UINT64_C(1) << 63);
@@ -96,41 +47,28 @@ static int newer_block(uint64_t previous, const struct stream_packet *packet)
 }
 
 static int frame_leader(struct gige_stream *stream, struct assembly *assembly,
-			const struct stream_packet *packet, struct gc_frame *frame)
+			const struct gvsp_packet *packet, struct gc_frame *frame)
 {
-	const uint8_t *data = packet->body;
 	size_t expected = 0;
 	int rc;
 
-	if (packet->id || (packet->size < GVSP_IMAGE_LEADER &&
-	    (packet->extended || packet->size != 32)))
+	if (packet->id)
 		return GC_PROTOCOL;
-	if (gc_be16(data + 2) != GC_PAYLOAD_IMAGE)
-		return GC_UNSUPPORTED;
 	memset(assembly, 0, sizeof(*assembly));
 	assembly->frame.data = frame->data;
 	assembly->frame.capacity = frame->capacity;
-	assembly->frame.block_id = packet->block;
-	assembly->frame.timestamp = gc_be64(data + 4);
 	assembly->frame.timestamp_hz = stream->device->timestamp_hz;
-	assembly->frame.pixel_format = gc_be32(data + 12);
-	assembly->frame.width = gc_be32(data + 16);
-	assembly->frame.height = gc_be32(data + 20);
-	assembly->frame.x_offset = gc_be32(data + 24);
-	assembly->frame.y_offset = gc_be32(data + 28);
-	if (packet->size >= GVSP_IMAGE_LEADER) {
-		assembly->frame.x_padding = gc_be16(data + 32);
-		assembly->frame.y_padding = gc_be16(data + 34);
-	}
-	assembly->frame.payload_type = GC_PAYLOAD_IMAGE;
+	rc = gvsp_read_image_leader(packet, &assembly->frame);
+	if (rc)
+		return rc;
 
-	rc = gige_image_layout(&assembly->frame, &expected);
+	rc = gc_image_layout(&assembly->frame, &expected);
 	if (rc && rc != GC_UNSUPPORTED)
 		return rc;
 	if (expected > frame->capacity)
 		return GC_BUFFER_SMALL;
 	assembly->expected_size = expected;
-	assembly->payload_size = stream->device->packet_size - GEV_UDP_OVERHEAD -
+	assembly->payload_size = stream->packet_size - GEV_UDP_OVERHEAD -
 				 (packet->extended ? GVSP_EXT_HEADER : GVSP_HEADER);
 	assembly->extended = packet->extended;
 	assembly->active = 1;
@@ -140,7 +78,7 @@ static int frame_leader(struct gige_stream *stream, struct assembly *assembly,
 }
 
 static int frame_data(struct gige_stream *stream, struct assembly *assembly,
-		      const struct stream_packet *packet)
+		      const struct gvsp_packet *packet)
 {
 	uint32_t id = packet->id;
 	size_t offset;
@@ -150,12 +88,12 @@ static int frame_data(struct gige_stream *stream, struct assembly *assembly,
 
 	if (!id || id >= PACKET_LIMIT || !packet->size ||
 	    packet->size > assembly->payload_size ||
-	    id - 1 >= IMAGE_LIMIT / assembly->payload_size + 1 ||
+	    id - 1 >= GC_IMAGE_LIMIT / assembly->payload_size + 1 ||
 	    (assembly->trailer && id >= assembly->trailer))
 		return GC_PROTOCOL;
 	offset = (id - 1) * assembly->payload_size;
 	end = offset + packet->size;
-	if (end > IMAGE_LIMIT)
+	if (end > GC_IMAGE_LIMIT)
 		return GC_PROTOCOL;
 	if (assembly->expected_size &&
 	    (end > assembly->expected_size ||
@@ -188,19 +126,16 @@ static int frame_data(struct gige_stream *stream, struct assembly *assembly,
 }
 
 static int frame_trailer(struct assembly *assembly,
-			 const struct stream_packet *packet)
+			 const struct gvsp_packet *packet)
 {
-	uint32_t height;
-
-	if (packet->size < GVSP_IMAGE_TRAILER || packet->id < 2 ||
+	if (packet->id < 2 ||
 	    packet->id > PACKET_LIMIT ||
-	    gc_be16(packet->body + 2) != GC_PAYLOAD_IMAGE ||
 	    packet->id <= assembly->last_data ||
 	    (assembly->trailer && assembly->trailer != packet->id) ||
 	    (assembly->short_packet && assembly->short_packet != packet->id - 1))
 		return GC_PROTOCOL;
-	height = gc_be32(packet->body + 4);
-	if (height && height != assembly->frame.height)
+	if (gvsp_read_image_trailer(packet->body, packet->size,
+				    assembly->frame.height))
 		return GC_PROTOCOL;
 	if (assembly->expected_size &&
 	    (assembly->expected_size - 1) / assembly->payload_size + 2 !=
@@ -210,12 +145,57 @@ static int frame_trailer(struct assembly *assembly,
 	return GC_OK;
 }
 
+static int frame_all_in(struct gige_stream *stream, const struct gvsp_packet *packet,
+			 struct gc_frame *frame)
+{
+	const size_t headers = GVSP_IMAGE_LEADER + GVSP_IMAGE_TRAILER;
+	struct gc_frame image = { .data = frame->data, .capacity = frame->capacity };
+	size_t expected;
+	size_t size;
+	int rc;
+
+	if (packet->size <= headers || packet->id)
+		return GC_PROTOCOL;
+	rc = gvsp_read_image_leader(packet, &image);
+	if (rc)
+		return rc;
+	rc = gvsp_read_image_trailer(packet->body + GVSP_IMAGE_LEADER,
+				     GVSP_IMAGE_TRAILER, image.height);
+	if (rc)
+		return rc;
+	size = packet->size - headers;
+	if (size > frame->capacity)
+		return GC_BUFFER_SMALL;
+	rc = gc_image_layout(&image, &expected);
+	if (rc && rc != GC_UNSUPPORTED)
+		return rc;
+	if (!rc && expected != size)
+		return GC_PROTOCOL;
+	image.size = size;
+	image.timestamp_hz = stream->device->timestamp_hz;
+	memcpy(image.data, packet->body + headers, size);
+	*frame = image;
+	return GC_OK;
+}
+
 static int assemble(struct gige_stream *stream, struct assembly *assembly,
-		    const struct stream_packet *packet, struct gc_frame *frame,
+		    const struct gvsp_packet *packet, struct gc_frame *frame,
 		    int *complete)
 {
 	int rc;
 
+	if (packet->kind == GVSP_ALL_IN) {
+		if (assembly->active && (assembly->frame.block_id == packet->block ||
+		    !newer_block(assembly->frame.block_id, packet)))
+			return GC_OK;
+		rc = frame_all_in(stream, packet, frame);
+		if (rc)
+			return rc;
+		if (assembly->active)
+			stream->stats.incomplete++;
+		*complete = 1;
+		return GC_OK;
+	}
 	if (packet->kind == GVSP_LEADER) {
 		if (assembly->active) {
 			if (assembly->frame.block_id == packet->block) {
@@ -296,7 +276,7 @@ static int stream_receive(void *context, struct gc_frame *frame,
 {
 	struct gige_stream *stream = context;
 	struct osal_endpoint source;
-	struct stream_packet packet;
+	struct gvsp_packet packet;
 	struct assembly assembly = { 0 };
 	uint64_t deadline = osal_deadline(timeout_ms);
 	unsigned int remaining;
@@ -328,7 +308,7 @@ static int stream_receive(void *context, struct gc_frame *frame,
 		if (rc == GC_BUFFER_SMALL) {
 			stream->stats.invalid_packets++;
 		} else if (!rc && source.address == stream->device->peer.address) {
-			rc = parse_packet(stream->packet, length, &packet);
+			rc = gvsp_decode(stream->packet, length, &packet);
 			if (!rc)
 				rc = assemble(stream, &assembly, &packet, frame,
 					      &complete);
@@ -382,6 +362,15 @@ static int stream_start(void *context)
 	if (!rc)
 		rc = gc_device_write_register(&dev->device, GEV_PACKET_SIZE,
 					     (packet & 0x60000000) | dev->packet_size);
+	if (!rc) {
+		rc = gc_device_read_register(&dev->device, GEV_PACKET_SIZE, &packet);
+		if (!rc) {
+			stream->packet_size = packet & 0xffff;
+			if (stream->packet_size < GEV_MIN_PACKET ||
+			    stream->packet_size > GEV_MAX_PACKET)
+				rc = GC_PROTOCOL;
+		}
+	}
 	if (!rc)
 		rc = gc_device_write_register(&dev->device, GEV_STREAM_IP,
 					     stream->local.address);

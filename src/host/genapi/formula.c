@@ -1,3 +1,4 @@
+/* GenICam GenApi 2.1.1 expression evaluation subset. */
 #include "nodemap.h"
 
 #include <ctype.h>

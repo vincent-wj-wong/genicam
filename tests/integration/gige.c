@@ -1,7 +1,8 @@
 #include <genicam/gige.h>
 #include <genicam/pfnc.h>
 
-#include "transport/gige/gige.h"
+#include "osal/osal.h"
+#include "transport/gige/wire/protocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +49,8 @@ static const char xml[] =
 	"<CommandValue>1</CommandValue></Command>"
 	"<IntReg Name='CaptureReg'><Address>0x1000c</Address><Length>4</Length></IntReg>"
 	"<StringReg Name='Label'><Address>0x10010</Address><Length>16</Length></StringReg>"
+	"<String Name='LabelAlias'><pValue>Label</pValue></String>"
+	"<String Name='LabelLiteral'><Value> fixed </Value></String>"
 	"<Integer Name='Cycle'><pValue>Cycle</pValue></Integer>"
 	"<Boolean Name='Enabled'><pValue>StateReg</pValue>"
 	"<OnValue>2</OnValue><OffValue>3</OffValue></Boolean>"
@@ -57,12 +60,13 @@ static const char xml[] =
 	"</RegisterDescription>";
 
 struct sensor {
-	struct gc_gige_server *server;
+	struct gc_camera *camera;
 	struct osal_mutex *lock;
 	uint8_t registers[36];
 	uint8_t image[IMAGE_SIZE];
 	uint8_t cache[IMAGE_SIZE];
 	int stopped;
+	int completed;
 };
 
 struct pending_receive {
@@ -157,6 +161,15 @@ static int sensor_write(void *context, uint64_t address, const void *data,
 	return GC_OK;
 }
 
+static void sensor_done(void *context, const struct gc_frame *frame, int status)
+{
+	struct sensor *sensor = context;
+
+	CHECK(frame->data == sensor->image);
+	CHECK(status == GC_OK);
+	sensor->completed++;
+}
+
 static void run_sensor(void *context)
 {
 	struct sensor *sensor = context;
@@ -179,11 +192,12 @@ static void run_sensor(void *context)
 		osal_mutex_unlock(sensor->lock);
 		if (stopped)
 			return;
-		rc = gc_gige_server_poll(sensor->server, 10);
+		rc = gc_camera_poll(sensor->camera, 10);
 		CHECK(rc == GC_OK || rc == GC_TIMEOUT);
 		if (gc_be32(sensor->registers + 12)) {
 			gc_put_be32(sensor->registers + 12, 0);
-			CHECK(gc_gige_server_send(sensor->server, &frame) == GC_OK);
+			CHECK(gc_camera_submit_frame(sensor->camera, &frame,
+						     sensor_done, sensor) == GC_OK);
 		}
 	}
 }
@@ -197,6 +211,57 @@ static uint16_t temporary_port(void)
 	CHECK(osal_udp_local(socket, &local) == GC_OK);
 	osal_udp_close(socket);
 	return local.port;
+}
+
+static void slow_control(void *context)
+{
+	osal_socket socket = *(osal_socket *)context;
+	struct osal_endpoint source;
+	struct gvcp_packet packet;
+	uint8_t rx[32];
+	uint8_t tx[12];
+	size_t length;
+	uint16_t commands[] = { GEV_VERSION, GEV_CAPABILITY, GEV_TICK_HI, GEV_TICK_LO };
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(commands); i++) {
+		CHECK(osal_udp_receive(socket, &source, rx, sizeof(rx), &length, 1000) == GC_OK);
+		CHECK(gvcp_decode(rx, length, &packet) == GC_OK);
+		CHECK(packet.command == GVCP_READ_REG && packet.size == 4);
+		CHECK(gc_be32(packet.body) == commands[i]);
+		if (i == 0) {
+			gvcp_header(tx, 0, GVCP_PENDING_ACK, 4, packet.id);
+			gc_put_be32(tx + 8, 200);
+			CHECK(osal_udp_send(socket, source, tx, sizeof(tx)) == GC_OK);
+			osal_msleep(80);
+		}
+		gvcp_header(tx, 0, GVCP_READ_REG + 1, 4, packet.id);
+		gc_put_be32(tx + 8, i == 0 ? 0x00010002 : 0);
+		CHECK(osal_udp_send(socket, source, tx, sizeof(tx)) == GC_OK);
+	}
+}
+
+static void test_pending_ack(void)
+{
+	struct gc_gige_options options = {
+		.address = "127.0.0.1",
+		.timeout_ms = 50,
+		.monitor = 1,
+	};
+	struct osal_endpoint local = { .address = ADDRESS };
+	struct osal_thread *thread;
+	struct gc_device *device;
+	osal_socket socket;
+
+	CHECK(osal_udp_open(local, 0, 0, &socket) == GC_OK);
+	CHECK(osal_udp_local(socket, &local) == GC_OK);
+	options.port = local.port;
+	thread = osal_thread_create(slow_control, &socket);
+	CHECK(thread);
+	CHECK(gc_gige_open(&options, &device) == GC_OK);
+	gc_device_close(device);
+	osal_thread_join(thread);
+	osal_udp_close(socket);
 }
 
 static void send_gvsp(osal_socket socket, struct osal_endpoint peer,
@@ -235,13 +300,16 @@ static void test_stream(struct gc_device *device, struct gc_nodemap *map,
 	struct osal_endpoint peer = { .address = ADDRESS };
 	struct gc_stream *stream;
 	struct gc_stream *extra;
+	struct gc_stream_queue *queue;
 	struct gc_stream_stats stats;
 	struct pending_receive pending;
 	struct osal_thread *thread;
 	uint8_t bytes[IMAGE_SIZE];
+	uint8_t spare[32];
 	struct gc_frame frame = { .data = bytes, .capacity = sizeof(bytes) };
 	uint8_t leader[36] = { 0 };
 	uint8_t trailer[8] = { 0 };
+	uint8_t all_in[36 + 8 + sizeof(spare)];
 	uint32_t port;
 	uint64_t deadline;
 	uint64_t extended = UINT64_C(0x1234567800000001);
@@ -252,9 +320,14 @@ static void test_stream(struct gc_device *device, struct gc_nodemap *map,
 	CHECK(gc_stream_open(device, &stream) == GC_OK);
 	CHECK(gc_stream_open(device, &extra) == GC_BUSY);
 	CHECK(gc_stream_receive(stream, &frame, 0) == GC_STOPPED);
+	CHECK(gc_stream_queue_open(stream, 1, &queue) == GC_OK);
+	CHECK(gc_stream_queue_push(queue, bytes, sizeof(bytes)) == GC_OK);
+	CHECK(gc_stream_queue_push(queue, bytes, sizeof(bytes)) == GC_BUSY);
+	CHECK(gc_stream_queue_push(queue, spare, sizeof(spare)) == GC_BUFFER_SMALL);
 	CHECK(gc_stream_start(stream) == GC_OK);
 	CHECK(gc_feature_execute(map, "Acquire") == GC_OK);
-	CHECK(gc_stream_receive(stream, &frame, 1000) == GC_OK);
+	CHECK(gc_stream_queue_receive(queue, &frame, 1000) == GC_OK);
+	CHECK(frame.data == bytes);
 	CHECK(frame.block_id == 1 && frame.timestamp == 123456);
 	CHECK(frame.timestamp_hz == 1000000 && frame.stride == 64);
 	CHECK(frame.size == sizeof(sensor->image));
@@ -303,6 +376,22 @@ static void test_stream(struct gc_device *device, struct gc_nodemap *map,
 	      stats.duplicates == 1 && stats.invalid_packets >= 1 &&
 	      stats.resend_requests >= 1);
 
+	gc_put_be32(leader + 16, 8);
+	gc_put_be32(leader + 20, 4);
+	gc_put_be32(trailer + 4, 4);
+	memcpy(all_in, leader, sizeof(leader));
+	memcpy(all_in + sizeof(leader), trailer, sizeof(trailer));
+	memcpy(all_in + sizeof(leader) + sizeof(trailer), sensor->image, sizeof(spare));
+	send_gvsp(socket, peer, 3, 0, 4, 0, all_in, sizeof(all_in));
+	CHECK(gc_stream_queue_push(queue, spare, sizeof(spare)) == GC_OK);
+	CHECK(gc_stream_queue_receive(queue, &frame, 1000) == GC_OK);
+	CHECK(frame.block_id == 3 && frame.data == spare && frame.size == sizeof(spare));
+	CHECK(frame.width == 8 && frame.height == 4);
+	CHECK(!memcmp(spare, sensor->image, sizeof(spare)));
+
+	frame.data = bytes;
+	gc_put_be32(leader + 16, 64);
+	gc_put_be32(leader + 20, 32);
 	send_gvsp(socket, peer, 3, 0, GVSP_LEADER, 0, leader, sizeof(leader));
 	frame.capacity = 1;
 	CHECK(gc_stream_receive(stream, &frame, 100) == GC_BUFFER_SMALL);
@@ -318,6 +407,14 @@ static void test_stream(struct gc_device *device, struct gc_nodemap *map,
 	CHECK(gc_stream_start(stream) == GC_OK);
 	CHECK(gc_feature_execute(map, "Acquire") == GC_OK);
 	CHECK(gc_stream_receive(stream, &frame, 1000) == GC_OK);
+	CHECK(gc_stream_queue_push(queue, bytes, sizeof(bytes)) == GC_OK);
+	CHECK(gc_stream_queue_receive(queue, &frame, 20) == GC_TIMEOUT);
+	CHECK(frame.data == bytes);
+	CHECK(gc_stream_queue_receive(queue, &frame, 0) == GC_NOT_FOUND);
+	CHECK(!frame.data);
+	CHECK(gc_stream_queue_push(queue, bytes, sizeof(bytes)) == GC_OK);
+	CHECK(gc_stream_queue_pop(queue, &frame) == GC_OK && frame.data == bytes);
+	gc_stream_queue_close(queue);
 	gc_stream_close(stream);
 	osal_udp_close(socket);
 }
@@ -325,7 +422,8 @@ static void test_stream(struct gc_device *device, struct gc_nodemap *map,
 int main(void)
 {
 	struct sensor sensor = { 0 };
-	struct gc_gige_server_config config = { 0 };
+	struct gc_camera_config config = { 0 };
+	struct gc_gige_camera_options camera_options = { 0 };
 	struct gc_gige_options options = { .address = "127.0.0.1", .timeout_ms = 100 };
 	struct gc_gige_device_info info;
 	struct gc_device *device;
@@ -335,6 +433,8 @@ int main(void)
 	enum gc_feature_type feature_type;
 	struct osal_thread *thread;
 	uint8_t zip[XML_ZIP_SIZE] = { 0 };
+	void *raw_xml;
+	size_t raw_size;
 	char text[32];
 	uint32_t reg;
 	double exposure;
@@ -350,10 +450,10 @@ int main(void)
 	for (i = 0; i < sizeof(sensor.image); i++)
 		sensor.image[i] = (uint8_t)(i % 251);
 
-	config.port = temporary_port();
-	config.address = options.address;
-	config.netmask = "255.0.0.0";
-	config.broadcast_discovery = 1;
+	camera_options.port = temporary_port();
+	camera_options.address = options.address;
+	camera_options.netmask = "255.0.0.0";
+	camera_options.broadcast_discovery = 1;
 	config.manufacturer = "Test Labs";
 	config.serial = "TEST-001";
 	config.xml = zip;
@@ -362,19 +462,19 @@ int main(void)
 	config.read = sensor_read;
 	config.write = sensor_write;
 	config.timestamp_hz = 1000000;
-	config.resend_buffer = sensor.cache;
-	config.resend_capacity = sizeof(sensor.cache);
-	CHECK(gc_gige_server_open(&config, &sensor.server) == GC_OK);
+	camera_options.resend_buffer = sensor.cache;
+	camera_options.resend_capacity = sizeof(sensor.cache);
+	CHECK(gc_gige_camera_open(&config, &camera_options, 2, &sensor.camera) == GC_OK);
 	thread = osal_thread_create(run_sensor, &sensor);
 	CHECK(thread);
 
-	options.port = config.port;
+	options.port = camera_options.port;
 #ifdef __linux__
-	options.interface = config.address;
+	options.interface = camera_options.address;
 	options.address = NULL;
 	CHECK(gc_gige_discover(&options, &info, 1, &count) == GC_OK);
-	CHECK(count == 1 && !strcmp(info.address, config.address));
-	options.address = config.address;
+	CHECK(count == 1 && !strcmp(info.address, camera_options.address));
+	options.address = camera_options.address;
 	options.interface = NULL;
 #endif
 	CHECK(gc_gige_discover(&options, &info, 1, &count) == GC_OK);
@@ -389,7 +489,10 @@ int main(void)
 	gc_device_close(monitor);
 	options.monitor = 0;
 
-	CHECK(gc_nodemap_open(device, &map) == GC_OK);
+	CHECK(gc_device_get_xml(device, &raw_xml, &raw_size) == GC_OK);
+	CHECK(raw_size == config.xml_size && !memcmp(raw_xml, config.xml, raw_size));
+	CHECK(gc_nodemap_open_xml(device, raw_xml, raw_size, &map) == GC_OK);
+	gc_device_free_xml(raw_xml);
 	CHECK(gc_feature_get_type(map, "Width", &feature_type) == GC_OK &&
 	      feature_type == GC_FEATURE_INTEGER);
 	CHECK(gc_feature_get_type(map, "ExposureTime", &feature_type) == GC_OK &&
@@ -421,6 +524,12 @@ int main(void)
 	CHECK(gc_feature_get_string(map, "Label", text, 3) == GC_BUFFER_SMALL);
 	CHECK(gc_feature_get_string(map, "Label", text, sizeof(text)) == GC_OK);
 	CHECK(!strcmp(text, "test"));
+	CHECK(gc_feature_set_string(map, "LabelAlias", "alias") == GC_OK);
+	CHECK(gc_feature_get_string(map, "LabelAlias", text, sizeof(text)) == GC_OK);
+	CHECK(!strcmp(text, "alias"));
+	CHECK(gc_feature_get_string(map, "LabelLiteral", text, sizeof(text)) == GC_OK);
+	CHECK(!strcmp(text, " fixed "));
+	CHECK(gc_feature_set_string(map, "LabelLiteral", "new") == GC_ACCESS);
 	CHECK(gc_feature_get_integer(map, "Cycle", &value) == GC_PROTOCOL);
 	CHECK(gc_pfnc_row_size(GC_PFNC_MONO10P, 5, &i) == GC_OK && i == 7);
 
@@ -433,7 +542,9 @@ int main(void)
 	sensor.stopped = 1;
 	osal_mutex_unlock(sensor.lock);
 	osal_thread_join(thread);
-	gc_gige_server_close(sensor.server);
+	CHECK(sensor.completed == 2);
+	gc_camera_close(sensor.camera);
 	osal_mutex_destroy(sensor.lock);
+	test_pending_ack();
 	return EXIT_SUCCESS;
 }

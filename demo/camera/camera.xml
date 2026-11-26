@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- GenICam GenApi 2.1.1, schema 1.1. Feature names follow SFNC 2.8. -->
 <RegisterDescription xmlns="http://www.genicam.org/GenApi/Version_1_1"
     ModelName="VirtualGigECamera" VendorName="GenICamDemo"
     StandardNameSpace="None" SchemaMajorVersion="1" SchemaMinorVersion="1" SchemaSubMinorVersion="0"

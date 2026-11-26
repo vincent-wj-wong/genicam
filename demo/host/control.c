@@ -1,4 +1,4 @@
-#include <genicam/gige.h>
+#include <genicam/gige/host.h>
 #include <genicam/pfnc.h>
 #include <genicam/sfnc.h>
 
@@ -62,6 +62,7 @@ static int capture(struct gc_gige_options *options, unsigned int frames,
 	struct gc_device *device = NULL;
 	struct gc_nodemap *map = NULL;
 	struct gc_stream *stream = NULL;
+	struct gc_stream_queue *queue = NULL;
 	struct gc_frame frame = { 0 };
 	struct gc_stream_stats stats;
 	const char *exposure_name = GC_SFNC_EXPOSURE_TIME;
@@ -114,6 +115,10 @@ static int capture(struct gc_gige_options *options, unsigned int frames,
 	}
 	rc = gc_stream_open(device, &stream);
 	if (!rc)
+		rc = gc_stream_queue_open(stream, 1, &queue);
+	if (!rc)
+		rc = gc_stream_queue_push(queue, frame.data, frame.capacity);
+	if (!rc)
 		rc = gc_stream_start(stream);
 	if (!rc)
 		rc = gc_feature_execute(map, GC_SFNC_ACQUISITION_START);
@@ -122,7 +127,7 @@ static int capture(struct gc_gige_options *options, unsigned int frames,
 	acquiring = 1;
 
 	for (i = 0; i < frames; i++) {
-		rc = gc_stream_receive(stream, &frame, 2000);
+		rc = gc_stream_queue_receive(queue, &frame, 2000);
 		if (rc)
 			goto out;
 		format = gc_pfnc_name(frame.pixel_format);
@@ -131,6 +136,11 @@ static int capture(struct gc_gige_options *options, unsigned int frames,
 		       frame.block_id, frame.width, frame.height,
 		       format ? format : "unknown", frame.size,
 		       frame.timestamp, frame.timestamp_hz);
+		if (i + 1 < frames) {
+			rc = gc_stream_queue_push(queue, frame.data, frame.capacity);
+			if (rc)
+				goto out;
+		}
 	}
 	if (path) {
 		rc = save_pgm(path, &frame);
@@ -152,6 +162,7 @@ out:
 		if (!rc)
 			rc = cleanup_rc;
 	}
+	gc_stream_queue_close(queue);
 	gc_stream_close(stream);
 	free(frame.data);
 	gc_nodemap_close(map);

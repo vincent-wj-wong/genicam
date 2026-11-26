@@ -1,4 +1,8 @@
-#include "gige.h"
+/* GigE Vision 1.2 GVCP device and GVSP single-channel transmitter. */
+#include <genicam/gige/camera.h>
+
+#include "osal/osal.h"
+#include "transport/gige/wire/protocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -258,7 +262,7 @@ int gc_gige_server_poll(struct gc_gige_server *server, unsigned int timeout_ms)
 	uint8_t request[GVCP_BUFFER];
 	uint8_t response[GVCP_BUFFER];
 	struct osal_endpoint peer;
-	uint16_t command;
+	struct gvcp_packet packet;
 	uint16_t length = 0;
 	size_t size;
 	int rc;
@@ -272,33 +276,29 @@ int gc_gige_server_poll(struct gc_gige_server *server, unsigned int timeout_ms)
 		return GC_OK;
 	if (rc)
 		return rc;
-	if (size < GVCP_HEADER || request[0] != GVCP_REQUEST ||
-	    gc_be16(request + 4) != size - GVCP_HEADER || !gc_be16(request + 6))
+	if (gvcp_decode(request, size, &packet) ||
+	    packet.status >> 8 != GVCP_REQUEST || !packet.id)
 		return GC_OK;
 
-	command = gc_be16(request + 2);
 	if (server->broadcast_discovery &&
-	    (command == GVCP_DISCOVERY || get_reg(server, GEV_IP) >> 24 == 127) &&
+	    (packet.command == GVCP_DISCOVERY || get_reg(server, GEV_IP) >> 24 == 127) &&
 	    ((peer.address ^ get_reg(server, GEV_IP)) & get_reg(server, GEV_NETMASK)))
 		return GC_OK;
 
-	rc = process_request(server, peer, command, request + GVCP_HEADER,
-			     size - GVCP_HEADER, response + GVCP_HEADER, &length);
-	if (!(request[1] & GVCP_ACK_REQUIRED) && command != GVCP_DISCOVERY)
+	rc = process_request(server, peer, packet.command, packet.body, packet.size,
+			     response + GVCP_HEADER, &length);
+	if (!(packet.status & GVCP_ACK_REQUIRED) && packet.command != GVCP_DISCOVERY)
 		return GC_OK;
 	if (rc)
 		length = 0;
-	gvcp_header(response, wire_status(rc), command + 1, length,
-		    gc_be16(request + 6));
+	gvcp_header(response, wire_status(rc), packet.command + 1, length, packet.id);
 	return osal_udp_send(server->control, peer, response, GVCP_HEADER + length);
 }
 
 static int send_packet(struct gc_gige_server *server, unsigned int kind,
 		       uint32_t id, size_t length, int resent)
 {
-	gc_put_be16(server->packet, resent ? 0x0100 : 0);
-	gc_put_be16(server->packet + 2, server->block);
-	gc_put_be32(server->packet + 4, (uint32_t)kind << 24 | id);
+	gvsp_write_header(server->packet, resent ? 0x0100 : 0, server->block, id, kind);
 	return osal_udp_send(server->stream, server->destination, server->packet,
 			     GVSP_HEADER + length);
 }
@@ -319,21 +319,11 @@ static int send_image_packet(struct gc_gige_server *server,
 	uint32_t end = (uint32_t)((image->size - 1) / block_size + 2);
 
 	if (id == 0) {
-		memset(payload, 0, GVSP_IMAGE_LEADER);
-		gc_put_be16(payload + 2, GC_PAYLOAD_IMAGE);
-		gc_put_be64(payload + 4, image->timestamp);
-		gc_put_be32(payload + 12, image->pixel_format);
-		gc_put_be32(payload + 16, image->width);
-		gc_put_be32(payload + 20, image->height);
-		gc_put_be32(payload + 24, image->x_offset);
-		gc_put_be32(payload + 28, image->y_offset);
-		gc_put_be16(payload + 32, image->x_padding);
-		gc_put_be16(payload + 34, image->y_padding);
+		gvsp_write_image_leader(payload, image);
 		return send_packet(server, GVSP_LEADER, id, GVSP_IMAGE_LEADER, resent);
 	}
 	if (id == end) {
-		gc_put_be32(payload, GC_PAYLOAD_IMAGE);
-		gc_put_be32(payload + 4, image->height);
+		gvsp_write_image_trailer(payload, image->height);
 		return send_packet(server, GVSP_TRAILER, id, GVSP_IMAGE_TRAILER, resent);
 	}
 	offset = (id - 1) * block_size;
@@ -387,7 +377,7 @@ int gc_gige_server_send(struct gc_gige_server *server, const struct gc_frame *fr
 		return GC_STOPPED;
 
 	image = *frame;
-	rc = gige_image_layout(&image, &total);
+	rc = gc_image_layout(&image, &total);
 	if (rc)
 		return rc;
 	if (total != image.size || image.capacity < total)
@@ -461,7 +451,8 @@ int gc_gige_server_open(const struct gc_gige_server_config *config,
 		return rc;
 	}
 
-	set_reg(server, GEV_VERSION, 1U << 16 | 2);
+	set_reg(server, GEV_VERSION, (uint32_t)GC_GIGE_CAMERA_VERSION_MAJOR << 16 |
+		GC_GIGE_CAMERA_VERSION_MINOR);
 	set_reg(server, GEV_DEVICE_MODE, 1U << 31);
 	set_reg(server, GEV_MAC_HIGH, 0x0200);
 	set_reg(server, GEV_MAC_LOW, source.address);

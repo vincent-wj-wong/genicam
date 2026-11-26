@@ -1,7 +1,7 @@
 #ifndef GC_NODEMAP_INTERNAL_H
 #define GC_NODEMAP_INTERNAL_H
 
-#include "core/internal.h"
+#include "host/internal.h"
 #include "osal/osal.h"
 
 #define GENAPI_DEPTH 48
@@ -18,6 +18,7 @@ enum node_type {
 	NODE_INT_REG,
 	NODE_MASKED_REG,
 	NODE_FLOAT_REG,
+	NODE_STRING,
 	NODE_STRING_REG,
 	NODE_CONVERTER,
 	NODE_INT_CONVERTER,

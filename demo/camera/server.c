@@ -1,4 +1,4 @@
-#include <genicam/gige.h>
+#include <genicam/gige/camera.h>
 #include <genicam/pfnc.h>
 
 #include "osal/osal.h"
@@ -33,6 +33,7 @@
 struct camera {
 	uint8_t registers[REG_ACQ_MODE + 4];
 	uint32_t frame_id;
+	int frame_pending;
 };
 
 static volatile sig_atomic_t stopping;
@@ -130,8 +131,17 @@ static int camera_write(void *context, uint64_t address, const void *data, size_
 	return GC_OK;
 }
 
-static int send_frame(struct gc_gige_server *server, struct camera *cam,
-		       uint8_t *pixels, uint64_t timestamp)
+static void frame_done(void *context, const struct gc_frame *frame, int status)
+{
+	struct camera *cam = context;
+
+	(void)frame;
+	(void)status;
+	cam->frame_pending = 0;
+}
+
+static int submit_frame(struct gc_camera *camera, struct camera *cam,
+			 uint8_t *pixels, uint64_t timestamp)
 {
 	struct gc_frame frame = {
 		.data = pixels,
@@ -151,7 +161,8 @@ static int send_frame(struct gc_gige_server *server, struct camera *cam,
 			pixels[(size_t)y * frame.width + x] = (uint8_t)(x + y + cam->frame_id);
 	}
 	cam->frame_id++;
-	return gc_gige_server_send(server, &frame);
+	cam->frame_pending = 1;
+	return gc_camera_submit_frame(camera, &frame, frame_done, cam);
 }
 
 static int parse_port(const char *arg, uint16_t *port)
@@ -168,7 +179,7 @@ static int parse_port(const char *arg, uint16_t *port)
 }
 
 static int parse_options(int argc, char **argv,
-			 struct gc_gige_server_config *config,
+			 struct gc_gige_camera_options *options,
 			 const char **xml_file)
 {
 	unsigned int positional = 0;
@@ -184,8 +195,8 @@ static int parse_options(int argc, char **argv,
 		if (argv[i][0] == '-' || positional == 2)
 			return GC_INVALID;
 		if (positional++ == 0)
-			config->address = argv[i];
-		else if (parse_port(argv[i], &config->port))
+			options->address = argv[i];
+		else if (parse_port(argv[i], &options->port))
 			return GC_INVALID;
 	}
 	return GC_OK;
@@ -274,12 +285,14 @@ out:
 
 int main(int argc, char **argv)
 {
-	struct gc_gige_server *server;
+	struct gc_camera *camera;
 	struct camera cam = { 0 };
-	struct gc_gige_server_config config = {
+	struct gc_gige_camera_options options = {
 		.address = "127.0.0.1",
 		.port = GC_GIGE_CONTROL_PORT,
 		.broadcast_discovery = 1,
+	};
+	struct gc_camera_config config = {
 		.manufacturer = "GenICam Demo",
 		.model = "Virtual GigE Camera",
 		.serial = "DEMO-GEV-001",
@@ -297,17 +310,17 @@ int main(int argc, char **argv)
 	uint64_t now;
 	int rc;
 
-	if (parse_options(argc, argv, &config, &xml_file)) {
+	if (parse_options(argc, argv, &options, &xml_file)) {
 		fprintf(stderr, "Usage: %s [address [port]] [--xml file]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
-	rc = interface_netmask(config.address, netmask);
+	rc = interface_netmask(options.address, netmask);
 	if (rc) {
-		fprintf(stderr, "Local address %s: %s\n", config.address,
+		fprintf(stderr, "Local address %s: %s\n", options.address,
 			gc_status_string(rc));
 		return EXIT_FAILURE;
 	}
-	config.netmask = netmask;
+	options.netmask = netmask;
 	if (xml_file) {
 		rc = read_xml(xml_file, &xml, &config.xml_size);
 	} else {
@@ -333,10 +346,10 @@ int main(int argc, char **argv)
 		free(xml);
 		return EXIT_FAILURE;
 	}
-	config.resend_buffer = pixels + MAX_WIDTH * MAX_HEIGHT;
-	config.resend_capacity = MAX_WIDTH * MAX_HEIGHT;
+	options.resend_buffer = pixels + MAX_WIDTH * MAX_HEIGHT;
+	options.resend_capacity = MAX_WIDTH * MAX_HEIGHT;
 
-	rc = gc_gige_server_open(&config, &server);
+	rc = gc_gige_camera_open(&config, &options, 1, &camera);
 	if (rc) {
 		fprintf(stderr, "Server open: %s\n", gc_status_string(rc));
 		free(pixels);
@@ -345,27 +358,27 @@ int main(int argc, char **argv)
 	}
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
-	printf("GigE Vision server at %s:%u\n", config.address, (unsigned int)config.port);
+	printf("GigE Vision server at %s:%u\n", options.address, (unsigned int)options.port);
 	printf("Camera XML: %s\n", xml_file);
 	fflush(stdout);
 
 	while (!stopping) {
-		rc = gc_gige_server_poll(server, 10);
+		rc = gc_camera_poll(camera, 10);
 		if (rc != GC_OK && rc != GC_TIMEOUT)
 			break;
 		rc = GC_OK;
 		now = osal_monotonic_us();
-		if (load32(cam.registers + REG_ACQUISITION) && now >= next) {
+		if (load32(cam.registers + REG_ACQUISITION) && now >= next &&
+		    !cam.frame_pending) {
 			next = now + FRAME_TIME_US;
-			rc = send_frame(server, &cam, pixels, now);
-			if (rc != GC_OK && rc != GC_STOPPED)
+			rc = submit_frame(camera, &cam, pixels, now);
+			if (rc)
 				break;
-			rc = GC_OK;
 		}
 	}
 	if (rc)
 		fprintf(stderr, "Server I/O: %s\n", gc_status_string(rc));
-	gc_gige_server_close(server);
+	gc_camera_close(camera);
 	free(pixels);
 	free(xml);
 	return rc ? EXIT_FAILURE : EXIT_SUCCESS;

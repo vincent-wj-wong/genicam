@@ -1,3 +1,4 @@
+/* GigE Vision 1.2 GVCP discovery, device control, and device XML access. */
 #include "gige.h"
 
 #include <stdlib.h>
@@ -61,6 +62,7 @@ int gc_gige_discover(const struct gc_gige_options *options,
 	struct osal_endpoint peer = { .port = GC_GIGE_CONTROL_PORT };
 	struct osal_endpoint source;
 	struct gc_gige_device_info info;
+	struct gvcp_packet reply;
 	uint8_t ack[GVCP_BUFFER];
 	uint32_t local = 0;
 	size_t iface_count = 0;
@@ -125,13 +127,12 @@ int gc_gige_discover(const struct gc_gige_options *options,
 			rc = osal_udp_receive(sockets[i].socket, &source, ack,
 					      sizeof(ack), &length, ms > 10 ? 10 : ms);
 			ms = osal_remaining_ms(deadline);
-			if (rc || length < GVCP_HEADER + GEV_DISCOVERY_SIZE ||
-			    gc_be16(ack) || gc_be16(ack + 2) != GVCP_DISCOVERY + 1 ||
-			    gc_be16(ack + 4) != length - GVCP_HEADER ||
-			    gc_be16(ack + 6) != i + 1 || source.port != peer.port)
+			if (rc || gvcp_decode(ack, length, &reply) || reply.status ||
+			    reply.size < GEV_DISCOVERY_SIZE ||
+			    reply.command != GVCP_DISCOVERY + 1 || reply.id != i + 1 ||
+			    source.port != peer.port)
 				continue;
-			discovery_info(&info, ack + GVCP_HEADER, sockets[i].local,
-				       source);
+			discovery_info(&info, reply.body, sockets[i].local, source);
 			for (j = 0; j < *count; j++) {
 				if (!strcmp(devices[j].address, info.address) &&
 				    !strcmp(devices[j].interface, info.interface))
@@ -206,13 +207,14 @@ static int transaction(struct gige_device *dev, uint16_t command,
 	uint8_t tx[GVCP_BUFFER];
 	uint8_t rx[GVCP_BUFFER];
 	struct osal_endpoint connected = { 0 };
+	struct gvcp_packet reply;
 	unsigned int attempts = command == GVCP_READ_REG ||
 				command == GVCP_READ_MEM ? 2 : 1;
+	uint64_t pending_deadline;
 	uint64_t deadline;
+	uint64_t extended;
 	unsigned int remaining;
 	size_t received;
-	uint16_t ack;
-	uint16_t status;
 	uint16_t id;
 	int rc;
 
@@ -227,6 +229,7 @@ static int transaction(struct gige_device *dev, uint16_t command,
 		if (rc)
 			return rc;
 		deadline = osal_deadline(dev->timeout);
+		pending_deadline = deadline + (uint64_t)dev->timeout * 3000;
 		while ((remaining = osal_remaining_ms(deadline))) {
 			rc = osal_udp_receive(dev->control, NULL, rx, sizeof(rx),
 					      &received, remaining);
@@ -238,18 +241,25 @@ static int transaction(struct gige_device *dev, uint16_t command,
 				return rc;
 			if (received < GVCP_HEADER || gc_be16(rx + 6) != id)
 				continue;
-			ack = gc_be16(rx + 2);
-			status = gc_be16(rx);
-			if (ack == GVCP_PENDING_ACK && !status)
+			rc = gvcp_decode(rx, received, &reply);
+			if (rc)
+				return rc;
+			if (reply.command == GVCP_PENDING_ACK && !reply.status) {
+				if (reply.size != sizeof(uint32_t))
+					return GC_PROTOCOL;
+				extended = osal_deadline(gc_be32(reply.body));
+				if (extended > deadline)
+					deadline = extended < pending_deadline ?
+						   extended : pending_deadline;
 				continue;
-			if (ack != command + 1)
+			}
+			if (reply.command != command + 1)
 				continue;
-			if (status)
-				return gvcp_error(status);
-			if (gc_be16(rx + 4) != response_size ||
-			    received != (size_t)GVCP_HEADER + response_size)
+			if (reply.status)
+				return gvcp_error(reply.status);
+			if (reply.size != response_size)
 				return GC_PROTOCOL;
-			memcpy(response, rx + GVCP_HEADER, response_size);
+			memcpy(response, reply.body, response_size);
 			return GC_OK;
 		}
 	}

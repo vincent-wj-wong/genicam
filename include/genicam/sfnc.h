@@ -1,3 +1,4 @@
+/* GenICam SFNC 2.8 feature names used by the SDK examples. */
 #ifndef GENICAM_SFNC_H
 #define GENICAM_SFNC_H
 

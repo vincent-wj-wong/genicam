@@ -1,3 +1,4 @@
+/* GenICam GenApi 2.1.1 node map, tested with XML schema 1.1. */
 #include "nodemap.h"
 
 #include <ctype.h>
@@ -36,6 +37,7 @@ static const char *const type_names[] = {
 	[NODE_INT_REG] = "IntReg",
 	[NODE_MASKED_REG] = "MaskedIntReg",
 	[NODE_FLOAT_REG] = "FloatReg",
+	[NODE_STRING] = "String",
 	[NODE_STRING_REG] = "StringReg",
 	[NODE_CONVERTER] = "Converter",
 	[NODE_INT_CONVERTER] = "IntConverter",
@@ -275,11 +277,14 @@ static void XMLCALL end(void *context, const XML_Char *name)
 	if (state->depth == state->property_depth) {
 		begin = state->text;
 		finish = begin + state->length;
-		while (begin < finish && isspace((unsigned char)*begin))
-			begin++;
-		while (finish > begin && isspace((unsigned char)finish[-1]))
-			finish--;
-		rc = add_property(&state->map->nodes[state->current], state->key,
+		node = &state->map->nodes[state->current];
+		if (node->type != NODE_STRING || state->key != PROP_VALUE) {
+			while (begin < finish && isspace((unsigned char)*begin))
+				begin++;
+			while (finish > begin && isspace((unsigned char)finish[-1]))
+				finish--;
+		}
+		rc = add_property(node, state->key,
 				  state->property_name, begin, (size_t)(finish - begin));
 		state->property_depth = 0;
 		if (rc)
@@ -379,6 +384,7 @@ int gc_feature_get_type(struct gc_nodemap *map, const char *name,
 	case NODE_ENUM:
 		*type = GC_FEATURE_ENUMERATION;
 		return GC_OK;
+	case NODE_STRING:
 	case NODE_STRING_REG:
 		*type = GC_FEATURE_STRING;
 		return GC_OK;
@@ -420,15 +426,32 @@ void gc_nodemap_close(struct gc_nodemap *map)
 	free(map);
 }
 
-int gc_nodemap_open(struct gc_device *device, struct gc_nodemap **result)
+static size_t xml_text_size(const uint8_t *bytes, size_t size)
+{
+	int utf16 = size >= 2 && ((bytes[0] == 0xff && bytes[1] == 0xfe) ||
+				  (bytes[0] == 0xfe && bytes[1] == 0xff) ||
+				  (bytes[0] == '<' && bytes[1] == 0) ||
+				  (bytes[0] == 0 && bytes[1] == '<'));
+
+	if (utf16) {
+		while (size >= 4 && !bytes[size - 1] && !bytes[size - 2])
+			size -= 2;
+	} else {
+		while (size && !bytes[size - 1])
+			size--;
+	}
+	return size;
+}
+
+int gc_nodemap_open_xml(struct gc_device *device, const void *data, size_t size,
+			struct gc_nodemap **result)
 {
 	struct gc_nodemap *map;
-	void *xml = NULL;
-	void *bytes = NULL;
-	size_t size = 0;
+	const void *xml = data;
+	void *unpacked = NULL;
 	int rc;
 
-	if (!device || !result)
+	if (!device || !result || !data || !size || size > GC_MAX_XML_SIZE)
 		return GC_INVALID;
 	*result = NULL;
 	map = calloc(1, sizeof(*map));
@@ -441,26 +464,35 @@ int gc_nodemap_open(struct gc_device *device, struct gc_nodemap **result)
 		return GC_NOMEM;
 	}
 
-	rc = device->ops->xml(device->context, &bytes, &size);
-	if (rc)
-		goto out;
-	if (size >= 4 && !memcmp(bytes, "PK\003\004", 4)) {
-		rc = gc_zip_xml(bytes, size, &xml, &size);
+	if (size >= 4 && !memcmp(data, "PK\003\004", 4)) {
+		rc = gc_zip_xml(data, size, &unpacked, &size);
 		if (rc)
 			goto out;
-	} else {
-		xml = bytes;
-		bytes = NULL;
+		xml = unpacked;
 	}
-	while (size && !((const char *)xml)[size - 1])
-		size--;
-	rc = parse_xml(map, xml, size);
+	rc = parse_xml(map, xml, xml_text_size(xml, size));
 out:
-	free(bytes);
-	free(xml);
+	free(unpacked);
 	if (rc)
 		gc_nodemap_close(map);
 	else
 		*result = map;
+	return rc;
+}
+
+int gc_nodemap_open(struct gc_device *device, struct gc_nodemap **result)
+{
+	void *xml;
+	size_t size;
+	int rc;
+
+	if (!device || !result)
+		return GC_INVALID;
+	*result = NULL;
+	rc = gc_device_get_xml(device, &xml, &size);
+	if (rc)
+		return rc;
+	rc = gc_nodemap_open_xml(device, xml, size, result);
+	gc_device_free_xml(xml);
 	return rc;
 }
